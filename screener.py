@@ -18,7 +18,8 @@ def load_stock_mapping():
         st.error(f"⚠️ Failed to load stock list: {e}")
         return {}, pd.DataFrame()
 
-stock_mapping, stock_df = load_stock_mapping()import os
+stock_mapping, stock_df = load_stock_mapping()
+import os
 import streamlit as st
 import pandas as pd
 import requests
