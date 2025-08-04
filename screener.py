@@ -53,35 +53,73 @@ def load_stock_mapping():
 stock_mapping, stock_df = load_stock_mapping()
 
 # --- Data fetching functions ---
-def fetch_stock_data_quick(security_id, timeout=8):
-    """Quickly fetch current stock data"""
-    try:
-        # Try live API first
-        api_url = f"{FLASK_API_BASE}/delta_data/{security_id}?interval=1"
-        response = requests.get(api_url, timeout=timeout)
-        
-        if response.status_code == 200:
-            data = pd.DataFrame(response.json())
-            if not data.empty:
-                data['timestamp'] = pd.to_datetime(data['timestamp'])
-                data.sort_values('timestamp', inplace=True)
-                
-                # Filter for current day
-                today = datetime.now().date()
-                start_time = datetime.combine(today, time(9, 0))
-                end_time = datetime.combine(today, time(23, 59, 59))
-                day_data = data[
-                    (data['timestamp'] >= pd.Timestamp(start_time)) & 
-                    (data['timestamp'] <= pd.Timestamp(end_time))
-                ]
-                
-                if not day_data.empty:
-                    return day_data
-        
+def fetch_stock_data_quick(security_id, timeout=10):
+    """Fetch from GitHub, local cache, and live API, then merge"""
+    def load_from_local_cache(security_id):
+        path = os.path.join(LOCAL_CACHE_DIR, f"cache_{security_id}.csv")
+        if os.path.exists(path):
+            try:
+                df = pd.read_csv(path)
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                return df.sort_values('timestamp')
+            except:
+                return pd.DataFrame()
         return pd.DataFrame()
-        
-    except Exception:
+
+    def save_to_local_cache(df, security_id):
+        if not df.empty:
+            path = os.path.join(LOCAL_CACHE_DIR, f"cache_{security_id}.csv")
+            df.to_csv(path, index=False)
+
+    def fetch_from_github(security_id):
+        try:
+            headers = {"Authorization": f"token {st.secrets['GITHUB_TOKEN']}"}
+            url = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/contents/{DATA_FOLDER}"
+            r = requests.get(url, headers=headers)
+            r.raise_for_status()
+            files = r.json()
+
+            dfs = []
+            for f in files:
+                if f["name"].endswith(".csv"):
+                    df = pd.read_csv(f["download_url"])
+                    df = df[df['security_id'] == security_id]
+                    if not df.empty:
+                        df['timestamp'] = pd.to_datetime(df['timestamp'])
+                        dfs.append(df)
+            if dfs:
+                return pd.concat(dfs).sort_values("timestamp")
+        except Exception as e:
+            st.warning(f"⚠️ GitHub fetch error: {e}")
         return pd.DataFrame()
+
+    def fetch_from_api(security_id):
+        try:
+            url = f"{FLASK_API_BASE}/delta_data/{security_id}?interval=1"
+            r = requests.get(url, timeout=timeout)
+            r.raise_for_status()
+            df = pd.DataFrame(r.json())
+            if not df.empty:
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                return df.sort_values("timestamp")
+        except:
+            return pd.DataFrame()
+
+    # Load from all 3 sources
+    df_github = fetch_from_github(security_id)
+    df_cache = load_from_local_cache(security_id)
+    df_live = fetch_from_api(security_id)
+
+    # Merge all and cache
+    full_df = pd.concat([df_github, df_cache, df_live]).drop_duplicates("timestamp").sort_values("timestamp")
+    save_to_local_cache(full_df, security_id)
+
+    # Filter to today
+    today = datetime.now().date()
+    start = datetime.combine(today, time(9, 0))
+    end = datetime.combine(today, time(23, 59, 59))
+    return full_df[(full_df['timestamp'] >= start) & (full_df['timestamp'] <= end)]
+
 
 def aggregate_stock_data(df, interval_minutes=5):
     """Aggregate stock data into intervals"""
