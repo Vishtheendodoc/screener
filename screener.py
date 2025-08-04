@@ -6,8 +6,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from streamlit_autorefresh import st_autorefresh
 import json
-from datetime import datetime, timedelta
-import time
+from datetime import datetime, timedelta, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import threading
