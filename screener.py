@@ -70,6 +70,33 @@ def get_market_hours_today():
     
     return market_start, extended_end
 
+def fetch_current_price(security_id, timeout=5):
+    """Fetch current live price from API"""
+    try:
+        url = f"{FLASK_API_BASE}/current_price/{security_id}"
+        r = requests.get(url, timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
+        if data and 'current_price' in data:
+            return float(data['current_price'])
+    except Exception as e:
+        # Silently handle API errors
+        pass
+    return None
+
+def get_live_or_latest_price(df, security_id):
+    """Get live price if available, otherwise use latest close from data"""
+    # Try to get live price first
+    live_price = fetch_current_price(security_id)
+    if live_price is not None:
+        return live_price
+    
+    # Fallback to latest close price from data
+    if not df.empty:
+        return float(df.iloc[-1]['close'])
+    
+    return 0.0
+
 # --- Data fetching functions ---
 def fetch_stock_data_quick(security_id, timeout=10):
     """Fetch from GitHub, local cache, and live API, then merge"""
@@ -161,7 +188,7 @@ def fetch_stock_data_quick(security_id, timeout=10):
     return today_data
 
 def aggregate_stock_data(df, interval_minutes=5):
-    """Aggregate stock data into intervals with enhanced calculations"""
+    """Aggregate stock data into intervals with enhanced calculations and zero-handling"""
     if df.empty:
         return df
     
@@ -183,11 +210,44 @@ def aggregate_stock_data(df, interval_minutes=5):
     if df_agg.empty:
         return df_agg
 
-    # Calculate deltas
+    # Calculate tick deltas with zero handling
     df_agg['tick_delta'] = df_agg['buy_initiated'] - df_agg['sell_initiated']
-    df_agg['cumulative_tick_delta'] = df_agg['tick_delta'].cumsum()
+    
+    # Handle cumulative tick delta with API failure protection
+    cumulative_values = []
+    running_total = 0
+    
+    for i, tick_delta in enumerate(df_agg['tick_delta']):
+        # If tick_delta is zero and both buy/sell initiated are zero (API failure)
+        if tick_delta == 0 and df_agg.iloc[i]['buy_initiated'] == 0 and df_agg.iloc[i]['sell_initiated'] == 0:
+            # Keep previous cumulative value (don't change running_total)
+            pass
+        else:
+            # Normal case: add tick_delta to running total
+            running_total += tick_delta
+        
+        cumulative_values.append(running_total)
+    
+    df_agg['cumulative_tick_delta'] = cumulative_values
+    
+    # Volume delta calculations (similar protection)
     df_agg['delta'] = df_agg['buy_volume'] - df_agg['sell_volume']
-    df_agg['cumulative_delta'] = df_agg['delta'].cumsum()
+    
+    # Handle cumulative volume delta
+    cumulative_vol_values = []
+    running_vol_total = 0
+    
+    for i, vol_delta in enumerate(df_agg['delta']):
+        # If volume delta is zero and both volumes are zero (API failure)
+        if vol_delta == 0 and df_agg.iloc[i]['buy_volume'] == 0 and df_agg.iloc[i]['sell_volume'] == 0:
+            # Keep previous cumulative value
+            pass
+        else:
+            running_vol_total += vol_delta
+        
+        cumulative_vol_values.append(running_vol_total)
+    
+    df_agg['cumulative_delta'] = cumulative_vol_values
     
     # Calculate percentage of session completed
     market_start, market_end = get_market_hours_today()
@@ -200,16 +260,18 @@ def aggregate_stock_data(df, interval_minutes=5):
     
     return df_agg
 
-def analyze_stock_pattern(df):
-    """Enhanced analysis of cumulative tick delta pattern"""
+def analyze_stock_pattern(df, security_id):
+    """Enhanced analysis of cumulative tick delta pattern with live price"""
     if df.empty or len(df) < 2:
+        # Try to get live price even if no data
+        live_price = fetch_current_price(security_id)
         return {
             'status': 'No Data',
             'current_cum_delta': 0,
             'trend': 'Unknown',
             'zero_crosses': 0,
             'latest_time': None,
-            'price': 0,
+            'price': live_price if live_price else 0,
             'total_periods': 0,
             'positive_periods': 0,
             'negative_periods': 0,
@@ -223,14 +285,26 @@ def analyze_stock_pattern(df):
     latest = df.iloc[-1]
     current_cum_delta = int(latest['cumulative_tick_delta'])
     
+    # Get live price or fallback to latest close
+    current_price = get_live_or_latest_price(df, security_id)
+    
     # Calculate additional metrics
     max_positive = int(df['cumulative_tick_delta'].max())
     max_negative = int(df['cumulative_tick_delta'].min())
     
-    # Count zero crosses
+    # Count zero crosses (only count non-API-failure periods)
     zero_crosses = 0
     prev_sign = None
-    for delta in df['cumulative_tick_delta']:
+    for i, delta in enumerate(df['cumulative_tick_delta']):
+        # Skip periods that might be API failures (where tick_delta was 0 due to no data)
+        current_tick = df.iloc[i]['tick_delta'] if 'tick_delta' in df.columns else 0
+        buy_init = df.iloc[i]['buy_initiated'] if 'buy_initiated' in df.columns else 0
+        sell_init = df.iloc[i]['sell_initiated'] if 'sell_initiated' in df.columns else 0
+        
+        # Skip if this looks like an API failure period
+        if current_tick == 0 and buy_init == 0 and sell_init == 0:
+            continue
+            
         current_sign = 'pos' if delta > 0 else 'neg' if delta < 0 else 'zero'
         if prev_sign and prev_sign != current_sign and current_sign != 'zero':
             zero_crosses += 1
@@ -273,7 +347,7 @@ def analyze_stock_pattern(df):
     # Enhanced status determination
     status = trend
     
-    # Check for recent significant moves
+    # Check for recent significant moves (exclude API failure periods)
     if len(df) >= 5:
         recent_change = df.iloc[-1]['cumulative_tick_delta'] - df.iloc[-5]['cumulative_tick_delta']
         if abs(recent_change) > abs(current_cum_delta) * 0.3:  # 30% change recently
@@ -293,7 +367,7 @@ def analyze_stock_pattern(df):
         'trend': trend,
         'zero_crosses': zero_crosses,
         'latest_time': latest['timestamp'],
-        'price': float(latest['close']),
+        'price': current_price,
         'total_periods': total_periods,
         'positive_periods': positive_periods,
         'negative_periods': negative_periods,
@@ -317,7 +391,8 @@ def process_stock_batch(security_ids, interval_minutes=5, max_workers=15):
             if not df.empty:
                 agg_df = aggregate_stock_data(df, interval_minutes)
                 if not agg_df.empty:
-                    analysis = analyze_stock_pattern(agg_df)
+                    # Pass security_id to analysis function for live price fetching
+                    analysis = analyze_stock_pattern(agg_df, security_id)
                     analysis['security_id'] = security_id
                     analysis['symbol'] = stock_mapping.get(str(security_id), f'Stock {security_id}')
                     return analysis
