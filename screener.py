@@ -1,3 +1,16 @@
+import os
+import streamlit as st
+import pandas as pd
+import requests
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import json
+from datetime import datetime, timedelta
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
+import threading
+
 # Create cache directories
 for cache_dir in [LOCAL_CACHE_DIR, ALERT_CACHE_DIR]:
     if not os.path.exists(cache_dir):
@@ -19,18 +32,6 @@ def load_stock_mapping():
         return {}, pd.DataFrame()
 
 stock_mapping, stock_df = load_stock_mapping()
-import os
-import streamlit as st
-import pandas as pd
-import requests
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import json
-from datetime import datetime, timedelta
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import logging
-import threading
 
 # Handle optional imports
 try:
