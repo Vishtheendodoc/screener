@@ -4,50 +4,14 @@ import pandas as pd
 import requests
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from streamlit_autorefresh import st_autorefresh
 import json
 from datetime import datetime, timedelta
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import threading
-
-# Create cache directories
-for cache_dir in [LOCAL_CACHE_DIR, ALERT_CACHE_DIR]:
-    if not os.path.exists(cache_dir):
-        os.makedirs(cache_dir)
-
-# --- Load stock mapping ---
-@st.cache_data(ttl=3600)
-def load_stock_mapping():
-    try:
-        if os.path.exists(STOCK_LIST_FILE):
-            stock_df = pd.read_csv(STOCK_LIST_FILE)
-            mapping = {str(k): v for k, v in zip(stock_df['security_id'], stock_df['symbol'])}
-            return mapping, stock_df
-        else:
-            st.error(f"⚠️ Stock list file '{STOCK_LIST_FILE}' not found!")
-            return {}, pd.DataFrame()
-    except Exception as e:
-        st.error(f"⚠️ Failed to load stock list: {e}")
-        return {}, pd.DataFrame()
-
-stock_mapping, stock_df = load_stock_mapping()
-
-# Handle optional imports
-try:
-    from streamlit_autorefresh import st_autorefresh
-    AUTOREFRESH_AVAILABLE = True
-except ImportError:
-    AUTOREFRESH_AVAILABLE = False
-    st.warning("⚠️ streamlit-autorefresh not installed. Auto-refresh disabled.")
-
-try:
-    import pytz
-    IST = pytz.timezone('Asia/Kolkata')
-    TIMEZONE_AVAILABLE = True
-except ImportError:
-    TIMEZONE_AVAILABLE = False
-    st.warning("⚠️ pytz not installed. Using system timezone.")
+import pytz
 
 # Configure page
 st.set_page_config(
@@ -56,15 +20,11 @@ st.set_page_config(
     page_icon="🎯"
 )
 
-# Auto-refresh controls (only if available)
-if AUTOREFRESH_AVAILABLE:
-    refresh_enabled = st.sidebar.toggle('🔄 Auto-refresh', value=True)
-    refresh_interval = st.sidebar.selectbox('Refresh Interval (seconds)', [30, 60, 120, 300], index=1)
-    if refresh_enabled:
-        st_autorefresh(interval=refresh_interval * 1000, key="screener_refresh", limit=None)
-else:
-    refresh_enabled = False
-    refresh_interval = 60
+# Auto-refresh controls
+refresh_enabled = st.sidebar.toggle('🔄 Auto-refresh', value=True)
+refresh_interval = st.sidebar.selectbox('Refresh Interval (seconds)', [30, 60, 120, 300], index=1)
+if refresh_enabled:
+    st_autorefresh(interval=refresh_interval * 1000, key="screener_refresh", limit=None)
 
 # --- Configuration ---
 GITHUB_USER = "Vishtheendodoc"
@@ -75,28 +35,39 @@ STOCK_LIST_FILE = "stock_list.csv"
 LOCAL_CACHE_DIR = "screener_cache"
 ALERT_CACHE_DIR = "alert_cache"
 
+# Indian timezone for market hours
+IST = pytz.timezone('Asia/Kolkata')
+
+# Create cache directories
+for cache_dir in [LOCAL_CACHE_DIR, ALERT_CACHE_DIR]:
+    if not os.path.exists(cache_dir):
+        os.makedirs(cache_dir)
+
+# --- Load stock mapping ---
+@st.cache_data(ttl=3600)
+def load_stock_mapping():
+    try:
+        stock_df = pd.read_csv(STOCK_LIST_FILE)
+        mapping = {str(k): v for k, v in zip(stock_df['security_id'], stock_df['symbol'])}
+        return mapping, stock_df
+    except Exception as e:
+        st.error(f"⚠️ Failed to load stock list: {e}")
+        return {}, pd.DataFrame()
+
+stock_mapping, stock_df = load_stock_mapping()
+
 # --- Enhanced market hours calculation ---
 def get_market_hours_today():
-    """Get market start and end times for today"""
-    if TIMEZONE_AVAILABLE:
-        now_ist = datetime.now(IST)
-        today_date = now_ist.date()
-        
-        # Indian market hours: 9:15 AM to 3:30 PM IST
-        market_start = IST.localize(datetime.combine(today_date, time(9, 15)))
-        market_end = IST.localize(datetime.combine(today_date, time(15, 30)))
-        
-        # For screening purposes, extend end time to capture after-market data
-        extended_end = IST.localize(datetime.combine(today_date, time(23, 59, 59)))
-    else:
-        # Fallback to system timezone
-        now_local = datetime.now()
-        today_date = now_local.date()
-        
-        # Assume Indian market hours in local time
-        market_start = datetime.combine(today_date, time(9, 15))
-        market_end = datetime.combine(today_date, time(15, 30))
-        extended_end = datetime.combine(today_date, time(23, 59, 59))
+    """Get market start and end times for today in IST"""
+    now_ist = datetime.now(IST)
+    today_date = now_ist.date()
+    
+    # Indian market hours: 9:15 AM to 3:30 PM IST
+    market_start = IST.localize(datetime.combine(today_date, time(9, 15)))
+    market_end = IST.localize(datetime.combine(today_date, time(15, 30)))
+    
+    # For screening purposes, extend end time to capture after-market data
+    extended_end = IST.localize(datetime.combine(today_date, time(23, 59, 59)))
     
     return market_start, extended_end
 
@@ -121,10 +92,6 @@ def fetch_stock_data_quick(security_id, timeout=10):
 
     def fetch_from_github(security_id):
         try:
-            # Check if GitHub token is available
-            if 'GITHUB_TOKEN' not in st.secrets:
-                return pd.DataFrame()
-                
             headers = {"Authorization": f"token {st.secrets['GITHUB_TOKEN']}"}
             url = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/contents/{DATA_FOLDER}"
             r = requests.get(url, headers=headers, timeout=timeout)
@@ -134,20 +101,15 @@ def fetch_stock_data_quick(security_id, timeout=10):
             dfs = []
             for f in files:
                 if f["name"].endswith(".csv"):
-                    try:
-                        df = pd.read_csv(f["download_url"])
-                        df = df[df['security_id'] == security_id]
-                        if not df.empty:
-                            df['timestamp'] = pd.to_datetime(df['timestamp'])
-                            dfs.append(df)
-                    except Exception:
-                        continue  # Skip problematic files
+                    df = pd.read_csv(f["download_url"])
+                    df = df[df['security_id'] == security_id]
+                    if not df.empty:
+                        df['timestamp'] = pd.to_datetime(df['timestamp'])
+                        dfs.append(df)
             if dfs:
                 return pd.concat(dfs).sort_values("timestamp")
         except Exception as e:
-            # Only show warning if it's not a common error
-            if "403" not in str(e) and "404" not in str(e):
-                st.warning(f"⚠️ GitHub fetch error for {security_id}: {e}")
+            st.warning(f"⚠️ GitHub fetch error for {security_id}: {e}")
         return pd.DataFrame()
 
     def fetch_from_api(security_id):
@@ -179,19 +141,17 @@ def fetch_stock_data_quick(security_id, timeout=10):
     full_df = pd.concat(all_dfs).drop_duplicates("timestamp").sort_values("timestamp")
     save_to_local_cache(full_df, security_id)
 
-    # Convert timestamps to consistent timezone
+    # Filter to today's market session
+    market_start, market_end = get_market_hours_today()
+    
+    # Convert timestamps to IST if they aren't already timezone-aware
     if full_df.empty:
         return full_df
     
-    # Handle timezone conversion based on availability
-    if TIMEZONE_AVAILABLE:
-        if full_df['timestamp'].dt.tz is None:
-            full_df['timestamp'] = pd.to_datetime(full_df['timestamp']).dt.tz_localize('UTC').dt.tz_convert(IST)
-        elif full_df['timestamp'].dt.tz != IST:
-            full_df['timestamp'] = full_df['timestamp'].dt.tz_convert(IST)
-    else:
-        # Ensure timestamps are datetime objects
-        full_df['timestamp'] = pd.to_datetime(full_df['timestamp'])
+    if full_df['timestamp'].dt.tz is None:
+        full_df['timestamp'] = pd.to_datetime(full_df['timestamp']).dt.tz_localize('UTC').dt.tz_convert(IST)
+    elif full_df['timestamp'].dt.tz != IST:
+        full_df['timestamp'] = full_df['timestamp'].dt.tz_convert(IST)
     
     # Filter for today's market session
     today_data = full_df[
@@ -385,12 +345,7 @@ st.sidebar.title("🎯 Delta Screener")
 
 # Market status
 market_start, market_end = get_market_hours_today()
-
-if TIMEZONE_AVAILABLE:
-    now_ist = datetime.now(IST)
-else:
-    now_ist = datetime.now()
-
+now_ist = datetime.now(IST)
 is_market_open = market_start <= now_ist <= market_end
 
 if is_market_open:
@@ -722,186 +677,5 @@ if filtered_results:
             # Create detailed summary report
             summary_report = f"""
 # Enhanced Delta Screener Summary Report
-Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-Market Session: {market_start.strftime('%H:%M')} - {market_end.strftime('%H:%M')}
-Market Status: {'🟢 Open' if is_market_open else '🔴 Closed'}
-
-## Filter Settings
-- Mode: {filter_mode}
-- Interval: {interval_minutes} minutes
-- Min Periods: {min_periods}
-- Min |Cum Delta|: {min_cum_delta}
-- Min Strength Score: {min_strength}%
-- Max Volatility Score: {max_volatility}
-
-## Results Summary
-- Total Stocks Scanned: {len(all_results)}
-- Matching Criteria: {len(filtered_results)}
-- Bullish Stocks: {bullish_count}
-- Bearish Stocks: {bearish_count}
-- Zero Crosses: {zero_cross_count}
-- High Strength (>70%): {high_strength_count}
-- Average Cumulative Delta: {avg_cum_delta:.0f}
-
-## Top 10 by |Cumulative Delta|
-"""
-            top_10 = sorted(filtered_results, key=lambda x: abs(x['current_cum_delta']), reverse=True)[:10]
-            for i, stock in enumerate(top_10, 1):
-                summary_report += f"{i}. {stock['symbol']}: {stock['current_cum_delta']:+d} ({stock['trend']}) - Strength: {stock['strength_score']:.0f}%\n"
-            
-            summary_report += f"""
-## Top 10 by Strength Score
-"""
-            top_strength = sorted(filtered_results, key=lambda x: x['strength_score'], reverse=True)[:10]
-            for i, stock in enumerate(top_strength, 1):
-                summary_report += f"{i}. {stock['symbol']}: {stock['strength_score']:.0f}% - Delta: {stock['current_cum_delta']:+d}\n"
-            
-            st.download_button(
-                "📄 Download Summary Report",
-                summary_report.encode('utf-8'),
-                f"delta_summary_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
-                "text/markdown",
-                use_container_width=True
-            )
-        
-        with col3:
-            # Create alerts for significant moves
-            alerts = []
-            for result in filtered_results:
-                if abs(result['current_cum_delta']) > 100 and result['strength_score'] > 80:
-                    direction = "BULLISH" if result['current_cum_delta'] > 0 else "BEARISH"
-                    alerts.append(f"🚨 {result['symbol']}: Strong {direction} signal - Delta: {result['current_cum_delta']:+d}, Strength: {result['strength_score']:.0f}%")
-                elif "Zero Cross" in result['status'] and abs(result['current_cum_delta']) > 50:
-                    alerts.append(f"🔄 {result['symbol']}: Zero Cross Alert - Delta: {result['current_cum_delta']:+d}")
-                elif "Recent Move" in result['status'] and result['strength_score'] > 70:
-                    alerts.append(f"⚡ {result['symbol']}: Recent Strong Move - Delta: {result['current_cum_delta']:+d}")
-            
-            if alerts:
-                alert_text = f"""
-# Delta Screener Alerts
-Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-## Active Alerts ({len(alerts)})
-"""
-                for alert in alerts[:20]:  # Limit to top 20 alerts
-                    alert_text += f"\n{alert}"
-                
-                st.download_button(
-                    "🚨 Download Alerts",
-                    alert_text.encode('utf-8'),
-                    f"delta_alerts_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
-                    "text/plain",
-                    use_container_width=True
-                )
-            else:
-                st.button("🚨 No Alerts", disabled=True, use_container_width=True)
-
-else:
-    with results_placeholder.container():
-        st.warning(f"🔍 No stocks found matching the criteria '{filter_mode}'")
-        st.info("💡 Try adjusting the filters or reducing the minimum requirements")
-        
-        # Show some sample data from all results
-        if all_results:
-            st.markdown("### Sample of Available Data")
-            sample_data = []
-            for result in all_results[:5]:
-                sample_data.append({
-                    'Symbol': result['symbol'],
-                    'Cumulative Delta': result['current_cum_delta'],
-                    'Trend': result['trend'],
-                    'Strength': f"{result['strength_score']:.0f}%",
-                    'Data Points': result['total_periods']
-                })
-            st.dataframe(pd.DataFrame(sample_data), use_container_width=True)
-
-# Market insights section
-if all_results:
-    st.markdown("---")
-    st.subheader("📈 Market Insights")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Overall market sentiment
-        total_bullish = len([r for r in all_results if r['current_cum_delta'] > 0])
-        total_bearish = len([r for r in all_results if r['current_cum_delta'] < 0])
-        
-        sentiment_score = (total_bullish - total_bearish) / len(all_results) * 100
-        
-        if sentiment_score > 20:
-            sentiment = "🟢 Strongly Bullish"
-        elif sentiment_score > 5:
-            sentiment = "🟡 Moderately Bullish"
-        elif sentiment_score > -5:
-            sentiment = "⚪ Neutral"
-        elif sentiment_score > -20:
-            sentiment = "🟠 Moderately Bearish"
-        else:
-            sentiment = "🔴 Strongly Bearish"
-        
-        st.metric("Overall Market Sentiment", sentiment, f"{sentiment_score:+.1f}%")
-        
-        # Active vs inactive stocks
-        active_stocks = len([r for r in all_results if r['total_periods'] >= min_periods])
-        st.metric("Active Stocks", f"{active_stocks}/{len(all_results)}", f"{active_stocks/len(all_results)*100:.0f}%")
-    
-    with col2:
-        # Volatility insights
-        avg_volatility = sum([r['volatility_score'] for r in all_results]) / len(all_results)
-        high_vol_count = len([r for r in all_results if r['volatility_score'] > 25])
-        
-        st.metric("Average Volatility", f"{avg_volatility:.1f}", f"{high_vol_count} high-vol stocks")
-        
-        # Session progress
-        session_complete = (now_ist - market_start).total_seconds() / (market_end - market_start).total_seconds() * 100
-        session_complete = max(0, min(100, session_complete))
-        
-        st.metric("Session Progress", f"{session_complete:.0f}%", 
-                 f"{'Market Open' if is_market_open else 'Market Closed'}")
-
-# Footer with enhanced information
-st.markdown("---")
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    st.caption(f"🕒 Last updated: {datetime.now().strftime('%H:%M:%S')}")
-
-with col2:
-    st.caption(f"🔄 Auto-refresh: {'ON' if refresh_enabled else 'OFF'} ({refresh_interval}s)")
-
-with col3:
-    st.caption(f"📊 Interval: {interval_minutes}min | Stocks: {len(all_results) if all_results else 0}")
-
-# Add legend for status meanings
-with st.expander("📖 Status Legend"):
-    st.markdown("""
-    **Trend Classifications:**
-    - 🟢 **Strongly Bullish**: >75% of periods positive, consistent upward movement
-    - 🟡 **Moderately Bullish**: 60-75% of periods positive, generally upward
-    - 🔵 **Currently Bullish**: Positive delta but mixed history
-    - 🔴 **Strongly Bearish**: >75% of periods negative, consistent downward movement
-    - 🟠 **Moderately Bearish**: 60-75% of periods negative, generally downward
-    - 🟤 **Currently Bearish**: Negative delta but mixed history
-    
-    **Special Indicators:**
-    - 🔄 **Zero Cross**: Recently crossed zero line (trend reversal)
-    - ⚡ **Recent Move**: Significant change in last few periods
-    - ⚪ **Neutral**: Around zero with no clear direction
-    
-    **Metrics:**
-    - **Strength Score**: Consistency of trend direction (0-100%)
-    - **Volatility Score**: Frequency of zero crosses (higher = more volatile)
-    - **Session Progress**: Percentage of trading day completed
-    """)
-
-# Performance monitoring
-if st.sidebar.button("🔧 Clear Cache"):
-    st.cache_data.clear()
-    # Clear local cache files
-    import shutil
-    if os.path.exists(LOCAL_CACHE_DIR):
-        shutil.rmtree(LOCAL_CACHE_DIR)
-        os.makedirs(LOCAL_CACHE_DIR)
-    st.sidebar.success("Cache cleared!")
-    st.rerun()
+Generated: {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S IST')}
+Market Session: {market_start
