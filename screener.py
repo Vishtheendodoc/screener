@@ -1,17 +1,51 @@
-import os
+# Create cache directories
+for cache_dir in [LOCAL_CACHE_DIR, ALERT_CACHE_DIR]:
+    if not os.path.exists(cache_dir):
+        os.makedirs(cache_dir)
+
+# --- Load stock mapping ---
+@st.cache_data(ttl=3600)
+def load_stock_mapping():
+    try:
+        if os.path.exists(STOCK_LIST_FILE):
+            stock_df = pd.read_csv(STOCK_LIST_FILE)
+            mapping = {str(k): v for k, v in zip(stock_df['security_id'], stock_df['symbol'])}
+            return mapping, stock_df
+        else:
+            st.error(f"⚠️ Stock list file '{STOCK_LIST_FILE}' not found!")
+            return {}, pd.DataFrame()
+    except Exception as e:
+        st.error(f"⚠️ Failed to load stock list: {e}")
+        return {}, pd.DataFrame()
+
+stock_mapping, stock_df = load_stock_mapping()import os
 import streamlit as st
 import pandas as pd
 import requests
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from streamlit_autorefresh import st_autorefresh
 import json
 from datetime import datetime, timedelta
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import threading
-import pytz
+
+# Handle optional imports
+try:
+    from streamlit_autorefresh import st_autorefresh
+    AUTOREFRESH_AVAILABLE = True
+except ImportError:
+    AUTOREFRESH_AVAILABLE = False
+    st.warning("⚠️ streamlit-autorefresh not installed. Auto-refresh disabled.")
+
+try:
+    import pytz
+    IST = pytz.timezone('Asia/Kolkata')
+    TIMEZONE_AVAILABLE = True
+except ImportError:
+    TIMEZONE_AVAILABLE = False
+    st.warning("⚠️ pytz not installed. Using system timezone.")
 
 # Configure page
 st.set_page_config(
@@ -20,11 +54,15 @@ st.set_page_config(
     page_icon="🎯"
 )
 
-# Auto-refresh controls
-refresh_enabled = st.sidebar.toggle('🔄 Auto-refresh', value=True)
-refresh_interval = st.sidebar.selectbox('Refresh Interval (seconds)', [30, 60, 120, 300], index=1)
-if refresh_enabled:
-    st_autorefresh(interval=refresh_interval * 1000, key="screener_refresh", limit=None)
+# Auto-refresh controls (only if available)
+if AUTOREFRESH_AVAILABLE:
+    refresh_enabled = st.sidebar.toggle('🔄 Auto-refresh', value=True)
+    refresh_interval = st.sidebar.selectbox('Refresh Interval (seconds)', [30, 60, 120, 300], index=1)
+    if refresh_enabled:
+        st_autorefresh(interval=refresh_interval * 1000, key="screener_refresh", limit=None)
+else:
+    refresh_enabled = False
+    refresh_interval = 60
 
 # --- Configuration ---
 GITHUB_USER = "Vishtheendodoc"
@@ -35,39 +73,28 @@ STOCK_LIST_FILE = "stock_list.csv"
 LOCAL_CACHE_DIR = "screener_cache"
 ALERT_CACHE_DIR = "alert_cache"
 
-# Indian timezone for market hours
-IST = pytz.timezone('Asia/Kolkata')
-
-# Create cache directories
-for cache_dir in [LOCAL_CACHE_DIR, ALERT_CACHE_DIR]:
-    if not os.path.exists(cache_dir):
-        os.makedirs(cache_dir)
-
-# --- Load stock mapping ---
-@st.cache_data(ttl=3600)
-def load_stock_mapping():
-    try:
-        stock_df = pd.read_csv(STOCK_LIST_FILE)
-        mapping = {str(k): v for k, v in zip(stock_df['security_id'], stock_df['symbol'])}
-        return mapping, stock_df
-    except Exception as e:
-        st.error(f"⚠️ Failed to load stock list: {e}")
-        return {}, pd.DataFrame()
-
-stock_mapping, stock_df = load_stock_mapping()
-
 # --- Enhanced market hours calculation ---
 def get_market_hours_today():
-    """Get market start and end times for today in IST"""
-    now_ist = datetime.now(IST)
-    today_date = now_ist.date()
-    
-    # Indian market hours: 9:15 AM to 3:30 PM IST
-    market_start = IST.localize(datetime.combine(today_date, time(9, 15)))
-    market_end = IST.localize(datetime.combine(today_date, time(15, 30)))
-    
-    # For screening purposes, extend end time to capture after-market data
-    extended_end = IST.localize(datetime.combine(today_date, time(23, 59, 59)))
+    """Get market start and end times for today"""
+    if TIMEZONE_AVAILABLE:
+        now_ist = datetime.now(IST)
+        today_date = now_ist.date()
+        
+        # Indian market hours: 9:15 AM to 3:30 PM IST
+        market_start = IST.localize(datetime.combine(today_date, time(9, 15)))
+        market_end = IST.localize(datetime.combine(today_date, time(15, 30)))
+        
+        # For screening purposes, extend end time to capture after-market data
+        extended_end = IST.localize(datetime.combine(today_date, time(23, 59, 59)))
+    else:
+        # Fallback to system timezone
+        now_local = datetime.now()
+        today_date = now_local.date()
+        
+        # Assume Indian market hours in local time
+        market_start = datetime.combine(today_date, time(9, 15))
+        market_end = datetime.combine(today_date, time(15, 30))
+        extended_end = datetime.combine(today_date, time(23, 59, 59))
     
     return market_start, extended_end
 
@@ -92,6 +119,10 @@ def fetch_stock_data_quick(security_id, timeout=10):
 
     def fetch_from_github(security_id):
         try:
+            # Check if GitHub token is available
+            if 'GITHUB_TOKEN' not in st.secrets:
+                return pd.DataFrame()
+                
             headers = {"Authorization": f"token {st.secrets['GITHUB_TOKEN']}"}
             url = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/contents/{DATA_FOLDER}"
             r = requests.get(url, headers=headers, timeout=timeout)
@@ -101,15 +132,20 @@ def fetch_stock_data_quick(security_id, timeout=10):
             dfs = []
             for f in files:
                 if f["name"].endswith(".csv"):
-                    df = pd.read_csv(f["download_url"])
-                    df = df[df['security_id'] == security_id]
-                    if not df.empty:
-                        df['timestamp'] = pd.to_datetime(df['timestamp'])
-                        dfs.append(df)
+                    try:
+                        df = pd.read_csv(f["download_url"])
+                        df = df[df['security_id'] == security_id]
+                        if not df.empty:
+                            df['timestamp'] = pd.to_datetime(df['timestamp'])
+                            dfs.append(df)
+                    except Exception:
+                        continue  # Skip problematic files
             if dfs:
                 return pd.concat(dfs).sort_values("timestamp")
         except Exception as e:
-            st.warning(f"⚠️ GitHub fetch error for {security_id}: {e}")
+            # Only show warning if it's not a common error
+            if "403" not in str(e) and "404" not in str(e):
+                st.warning(f"⚠️ GitHub fetch error for {security_id}: {e}")
         return pd.DataFrame()
 
     def fetch_from_api(security_id):
@@ -141,17 +177,19 @@ def fetch_stock_data_quick(security_id, timeout=10):
     full_df = pd.concat(all_dfs).drop_duplicates("timestamp").sort_values("timestamp")
     save_to_local_cache(full_df, security_id)
 
-    # Filter to today's market session
-    market_start, market_end = get_market_hours_today()
-    
-    # Convert timestamps to IST if they aren't already timezone-aware
+    # Convert timestamps to consistent timezone
     if full_df.empty:
         return full_df
     
-    if full_df['timestamp'].dt.tz is None:
-        full_df['timestamp'] = pd.to_datetime(full_df['timestamp']).dt.tz_localize('UTC').dt.tz_convert(IST)
-    elif full_df['timestamp'].dt.tz != IST:
-        full_df['timestamp'] = full_df['timestamp'].dt.tz_convert(IST)
+    # Handle timezone conversion based on availability
+    if TIMEZONE_AVAILABLE:
+        if full_df['timestamp'].dt.tz is None:
+            full_df['timestamp'] = pd.to_datetime(full_df['timestamp']).dt.tz_localize('UTC').dt.tz_convert(IST)
+        elif full_df['timestamp'].dt.tz != IST:
+            full_df['timestamp'] = full_df['timestamp'].dt.tz_convert(IST)
+    else:
+        # Ensure timestamps are datetime objects
+        full_df['timestamp'] = pd.to_datetime(full_df['timestamp'])
     
     # Filter for today's market session
     today_data = full_df[
@@ -345,7 +383,12 @@ st.sidebar.title("🎯 Delta Screener")
 
 # Market status
 market_start, market_end = get_market_hours_today()
-now_ist = datetime.now(IST)
+
+if TIMEZONE_AVAILABLE:
+    now_ist = datetime.now(IST)
+else:
+    now_ist = datetime.now()
+
 is_market_open = market_start <= now_ist <= market_end
 
 if is_market_open:
@@ -677,8 +720,8 @@ if filtered_results:
             # Create detailed summary report
             summary_report = f"""
 # Enhanced Delta Screener Summary Report
-Generated: {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S IST')}
-Market Session: {market_start.strftime('%H:%M')} - {market_end.strftime('%H:%M')} IST
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Market Session: {market_start.strftime('%H:%M')} - {market_end.strftime('%H:%M')}
 Market Status: {'🟢 Open' if is_market_open else '🔴 Closed'}
 
 ## Filter Settings
@@ -734,7 +777,7 @@ Market Status: {'🟢 Open' if is_market_open else '🔴 Closed'}
             if alerts:
                 alert_text = f"""
 # Delta Screener Alerts
-Generated: {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S IST')}
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 ## Active Alerts ({len(alerts)})
 """
@@ -820,7 +863,7 @@ st.markdown("---")
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    st.caption(f"🕒 Last updated: {datetime.now(IST).strftime('%H:%M:%S IST')}")
+    st.caption(f"🕒 Last updated: {datetime.now().strftime('%H:%M:%S')}")
 
 with col2:
     st.caption(f"🔄 Auto-refresh: {'ON' if refresh_enabled else 'OFF'} ({refresh_interval}s)")
@@ -859,4 +902,4 @@ if st.sidebar.button("🔧 Clear Cache"):
         shutil.rmtree(LOCAL_CACHE_DIR)
         os.makedirs(LOCAL_CACHE_DIR)
     st.sidebar.success("Cache cleared!")
-    st.experimental_rerun()
+    st.rerun()
