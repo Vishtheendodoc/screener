@@ -21,7 +21,7 @@ st.set_page_config(
 
 # Auto-refresh controls
 refresh_enabled = st.sidebar.toggle('🔄 Auto-refresh', value=True)
-refresh_interval = st.sidebar.selectbox('Refresh Interval (seconds)', [300], index=1)
+refresh_interval = st.sidebar.selectbox('Refresh Interval (seconds)', [300, 600], index=1)
 if refresh_enabled:
     st_autorefresh(interval=refresh_interval * 1000, key="screener_refresh", limit=None)
 
