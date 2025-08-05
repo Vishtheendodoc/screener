@@ -71,27 +71,34 @@ def get_market_hours_today():
     return market_start, extended_end
 
 def fetch_current_price(security_id, timeout=5):
-    """Fetch current live price from API"""
+    """Fetch current live price from delta_data API (same as main dashboard)"""
     try:
-        url = f"{FLASK_API_BASE}/current_price/{security_id}"
+        # Use the same endpoint as the main dashboard
+        url = f"{FLASK_API_BASE}/delta_data/{security_id}?interval=1"
         r = requests.get(url, timeout=timeout)
         r.raise_for_status()
         data = r.json()
-        if data and 'current_price' in data:
-            return float(data['current_price'])
+        
+        if data:
+            # Get the latest record and extract close price
+            df = pd.DataFrame(data)
+            if not df.empty:
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                latest_row = df.sort_values('timestamp').iloc[-1]
+                return float(latest_row['close'])
     except Exception as e:
-        # Silently handle API errors
-        pass
+        # Silently handle API errors for cleaner logs
+        logging.debug(f"Price fetch error for {security_id}: {e}")
     return None
 
 def get_live_or_latest_price(df, security_id):
     """Get live price if available, otherwise use latest close from data"""
-    # Try to get live price first
+    # Try to get live price first using the same API as main dashboard
     live_price = fetch_current_price(security_id)
     if live_price is not None:
         return live_price
     
-    # Fallback to latest close price from data
+    # Fallback to latest close price from existing data
     if not df.empty:
         return float(df.iloc[-1]['close'])
     
@@ -99,7 +106,7 @@ def get_live_or_latest_price(df, security_id):
 
 # --- Data fetching functions ---
 def fetch_stock_data_quick(security_id, timeout=10):
-    """Fetch from GitHub, local cache, and live API, then merge"""
+    """Updated to use the same API structure as main dashboard"""
     def load_from_local_cache(security_id):
         path = os.path.join(LOCAL_CACHE_DIR, f"cache_{security_id}.csv")
         if os.path.exists(path):
@@ -128,18 +135,28 @@ def fetch_stock_data_quick(security_id, timeout=10):
             for f in files:
                 if f["name"].endswith(".csv"):
                     df = pd.read_csv(f["download_url"])
-                    df = df[df['security_id'] == security_id]
+                    # Ensure security_id is treated as string for comparison
+                    df = df[df['security_id'].astype(str) == str(security_id)]
                     if not df.empty:
                         df['timestamp'] = pd.to_datetime(df['timestamp'])
+                        # Convert numeric columns properly
+                        numeric_cols = [
+                            'buy_initiated', 'buy_volume', 'close', 'delta', 'high', 'low', 'open',
+                            'sell_initiated', 'sell_volume', 'tick_delta'
+                        ]
+                        for col in numeric_cols:
+                            if col in df.columns:
+                                df[col] = pd.to_numeric(df[col], errors='coerce')
                         dfs.append(df)
             if dfs:
                 return pd.concat(dfs).sort_values("timestamp")
         except Exception as e:
-            st.warning(f"⚠️ GitHub fetch error for {security_id}: {e}")
+            logging.debug(f"GitHub fetch error for {security_id}: {e}")
         return pd.DataFrame()
 
     def fetch_from_api(security_id):
         try:
+            # Use the same API endpoint as main dashboard
             url = f"{FLASK_API_BASE}/delta_data/{security_id}?interval=1"
             r = requests.get(url, timeout=timeout)
             r.raise_for_status()
@@ -149,11 +166,10 @@ def fetch_stock_data_quick(security_id, timeout=10):
                 df['timestamp'] = pd.to_datetime(df['timestamp'])
                 return df.sort_values("timestamp")
         except Exception as e:
-            # Silently handle API errors for cleaner logs
-            pass
+            logging.debug(f"API fetch error for {security_id}: {e}")
         return pd.DataFrame()
 
-    # Load from all 3 sources
+    # Load from all 3 sources (same as main dashboard)
     df_github = fetch_from_github(security_id)
     df_cache = load_from_local_cache(security_id)
     df_live = fetch_from_api(security_id)
@@ -165,9 +181,11 @@ def fetch_stock_data_quick(security_id, timeout=10):
         return pd.DataFrame()
     
     full_df = pd.concat(all_dfs).drop_duplicates("timestamp").sort_values("timestamp")
+    
+    # Save updated cache
     save_to_local_cache(full_df, security_id)
 
-    # Filter to today's market session
+    # Filter to today's market session (same logic as main dashboard)
     market_start, market_end = get_market_hours_today()
     
     # Convert timestamps to IST if they aren't already timezone-aware
@@ -261,9 +279,9 @@ def aggregate_stock_data(df, interval_minutes=5):
     return df_agg
 
 def analyze_stock_pattern(df, security_id):
-    """Enhanced analysis of cumulative tick delta pattern with live price"""
+    """Enhanced analysis with improved live price fetching"""
     if df.empty or len(df) < 2:
-        # Try to get live price even if no data
+        # Try to get live price even if no data using the working API
         live_price = fetch_current_price(security_id)
         return {
             'status': 'No Data',
@@ -285,7 +303,7 @@ def analyze_stock_pattern(df, security_id):
     latest = df.iloc[-1]
     current_cum_delta = int(latest['cumulative_tick_delta'])
     
-    # Get live price or fallback to latest close
+    # Get live price using the working method
     current_price = get_live_or_latest_price(df, security_id)
     
     # Calculate additional metrics
@@ -296,7 +314,7 @@ def analyze_stock_pattern(df, security_id):
     zero_crosses = 0
     prev_sign = None
     for i, delta in enumerate(df['cumulative_tick_delta']):
-        # Skip periods that might be API failures (where tick_delta was 0 due to no data)
+        # Skip periods that might be API failures
         current_tick = df.iloc[i]['tick_delta'] if 'tick_delta' in df.columns else 0
         buy_init = df.iloc[i]['buy_initiated'] if 'buy_initiated' in df.columns else 0
         sell_init = df.iloc[i]['sell_initiated'] if 'sell_initiated' in df.columns else 0
