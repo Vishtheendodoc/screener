@@ -569,23 +569,17 @@ if filtered_results:
         st.markdown("---")
         
         # Quick filters for mobile
-        filter_tabs = st.tabs(["🔥 All", "🟢 Bullish", "🔴 Bearish", "🔄 Crosses", "⚡ Recent"])
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔥 All", "🟢 Bullish", "🔴 Bearish", "🔄 Crosses", "⚡ Recent"])
         
-        with filter_tabs[0]:  # All stocks
-            display_results = filtered_results
-        with filter_tabs[1]:  # Bullish
-            display_results = [r for r in filtered_results if r['current_cum_delta'] > 0]
-        with filter_tabs[2]:  # Bearish
-            display_results = [r for r in filtered_results if r['current_cum_delta'] < 0]
-        with filter_tabs[3]:  # Zero crosses
-            display_results = [r for r in filtered_results if 'Zero Cross' in r['status']]
-        with filter_tabs[4]:  # Recent moves
-            display_results = [r for r in filtered_results if 'Recent Move' in r['status']]
-        
-        if display_results:
+        def create_mobile_display(display_results):
+            """Helper function to create consistent mobile display"""
+            if not display_results:
+                st.info("No stocks found in this category")
+                return
+                
             # Mobile-optimized table with essential columns only
             mobile_data = []
-            for result in display_results:  # Show all results
+            for result in display_results:
                 # Compact status with emoji
                 if result['current_cum_delta'] > 0:
                     if 'Strongly' in result['trend']:
@@ -649,34 +643,57 @@ if filtered_results:
             # Display with mobile-friendly height
             st.dataframe(styled_mobile_df, use_container_width=True, height=400)
             
-            # Mobile-friendly summary cards for top performers
+            # Mobile-friendly summary for top performers in current tab
             if len(display_results) > 0:
-                st.markdown("### 🏆 Top Performers")
+                st.markdown("### 🏆 Top in Category")
                 
-                # Top 3 bullish and bearish
-                top_bullish = [r for r in display_results if r['current_cum_delta'] > 0][:3]
-                top_bearish = [r for r in display_results if r['current_cum_delta'] < 0][:3]
-                
-                if top_bullish:
-                    st.markdown("**🟢 Top Bullish:**")
-                    for i, stock in enumerate(top_bullish, 1):
-                        st.write(f"{i}. **{stock['symbol']}** - Delta: {stock['current_cum_delta']:+d} | Strength: {stock['strength_score']:.0f}% | ₹{stock['price']:.1f}")
-                
-                if top_bearish:
-                    st.markdown("**🔴 Top Bearish:**")
-                    for i, stock in enumerate(top_bearish, 1):
-                        st.write(f"{i}. **{stock['symbol']}** - Delta: {stock['current_cum_delta']:+d} | Strength: {stock['strength_score']:.0f}% | ₹{stock['price']:.1f}")
+                # Show top 3 from current filter
+                for i, stock in enumerate(display_results[:3], 1):
+                    st.write(f"{i}. **{stock['symbol']}** - Delta: {stock['current_cum_delta']:+d} | Strength: {stock['strength_score']:.0f}% | ₹{stock['price']:.1f}")
+        
+        with tab1:  # All stocks
+            st.write(f"📊 Showing all {len(filtered_results)} filtered stocks")
+            create_mobile_display(filtered_results)
             
-            # Mobile download option
-            st.markdown("---")
-            csv_data = mobile_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                "📥 Download Results",
-                csv_data,
-                f"delta_screener_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                "text/csv",
-                use_container_width=True
-            )
+        with tab2:  # Bullish
+            bullish_results = [r for r in filtered_results if r['current_cum_delta'] > 0]
+            st.write(f"🟢 {len(bullish_results)} bullish stocks")
+            create_mobile_display(bullish_results)
+            
+        with tab3:  # Bearish
+            bearish_results = [r for r in filtered_results if r['current_cum_delta'] < 0]
+            st.write(f"🔴 {len(bearish_results)} bearish stocks")
+            create_mobile_display(bearish_results)
+            
+        with tab4:  # Zero crosses
+            cross_results = [r for r in filtered_results if 'Zero Cross' in r['status']]
+            st.write(f"🔄 {len(cross_results)} stocks with zero crosses")
+            create_mobile_display(cross_results)
+            
+        with tab5:  # Recent moves
+            recent_results = [r for r in filtered_results if 'Recent Move' in r['status']]
+            st.write(f"⚡ {len(recent_results)} stocks with recent moves")
+            create_mobile_display(recent_results)
+        
+        # Mobile download option (outside tabs)
+        st.markdown("---")
+        csv_data = pd.DataFrame([{
+            'Stock': r['symbol'],
+            'Cum_Delta': r['current_cum_delta'],
+            'Strength': r['strength_score'],
+            'Price': r['price'],
+            'Status': r['status'],
+            'Trend': r['trend'],
+            'Latest_Time': r['latest_time'].strftime('%Y-%m-%d %H:%M') if r['latest_time'] else 'N/A'
+        } for r in filtered_results]).to_csv(index=False).encode('utf-8')
+        
+        st.download_button(
+            "📥 Download Results",
+            csv_data,
+            f"delta_screener_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            "text/csv",
+            use_container_width=True
+        )
 
 else:
     with results_placeholder.container():
