@@ -12,20 +12,21 @@ import logging
 import threading
 import pytz
 
-# Configure page
+# Configure page for mobile
 st.set_page_config(
     page_title="Stock Delta Screener", 
     layout="wide",
-    page_icon="🎯"
+    page_icon="🎯",
+    initial_sidebar_state="collapsed"
 )
 
-# Auto-refresh controls
-refresh_enabled = st.sidebar.toggle('🔄 Auto-refresh', value=True)
-refresh_interval = st.sidebar.selectbox('Refresh Interval (seconds)', [300, 600], index=1)
+# Auto-refresh with simplified controls
+refresh_enabled = True
+refresh_interval = 600  # 10 minutes default
 if refresh_enabled:
     st_autorefresh(interval=refresh_interval * 1000, key="screener_refresh", limit=None)
 
-# --- Configuration ---
+# --- Configuration (Default Settings) ---
 GITHUB_USER = "Vishtheendodoc"
 GITHUB_REPO = "ComOflo"
 DATA_FOLDER = "data_snapshots"
@@ -33,6 +34,17 @@ FLASK_API_BASE = "https://comoflo.onrender.com/api"
 STOCK_LIST_FILE = "stock_list.csv"
 LOCAL_CACHE_DIR = "screener_cache"
 ALERT_CACHE_DIR = "alert_cache"
+
+# Default filter settings (no sidebar customization)
+FILTER_MODE = "All Stocks"
+INTERVAL_MINUTES = 5
+MIN_PERIODS = 10
+MIN_CUM_DELTA = 0
+MIN_STRENGTH = 0
+MAX_VOLATILITY = 100
+MIN_PRICE = 0.0
+MAX_PRICE = 0.0
+AUTO_SORT = "Cumulative Delta"
 
 # Indian timezone for market hours
 IST = pytz.timezone('Asia/Kolkata')
@@ -432,63 +444,38 @@ def process_stock_batch(security_ids, interval_minutes=5, max_workers=15):
     
     return results
 
-# --- Sidebar Controls ---
-st.sidebar.title("🎯 Delta Screener")
+# --- Main Application ---
 
-# Market status
+# Market status header (mobile-friendly)
 market_start, market_end = get_market_hours_today()
 now_ist = datetime.now(IST)
 is_market_open = market_start <= now_ist <= market_end
 
-if is_market_open:
-    st.sidebar.success("🟢 Market Open")
-    time_to_close = market_end - now_ist
-    hours, remainder = divmod(time_to_close.seconds, 3600)
-    minutes, _ = divmod(remainder, 60)
-    st.sidebar.caption(f"Closes in {hours}h {minutes}m")
-else:
-    if now_ist < market_start:
-        st.sidebar.info("🔵 Pre-Market")
-        time_to_open = market_start - now_ist
-        hours, remainder = divmod(time_to_open.seconds, 3600)
-        minutes, _ = divmod(remainder, 60)
-        st.sidebar.caption(f"Opens in {hours}h {minutes}m")
+# Mobile-friendly header
+st.title("🎯 Stock Delta Screener")
+
+# Compact market status
+col1, col2, col3 = st.columns(3)
+with col1:
+    if is_market_open:
+        st.success("🟢 Market Open")
     else:
-        st.sidebar.warning("🟡 After Hours")
+        if now_ist < market_start:
+            st.info("🔵 Pre-Market")
+        else:
+            st.warning("🟡 After Hours")
 
-st.sidebar.markdown("---")
+with col2:
+    st.caption(f"📊 5min intervals")
 
-# Enhanced filter controls
-filter_mode = st.sidebar.selectbox(
-    "📊 Filter Mode:",
-    ["All Stocks", "Strongly Bullish", "Moderately Bullish", "Currently Bullish", 
-     "Strongly Bearish", "Moderately Bearish", "Currently Bearish", 
-     "Zero Crosses", "Recent Moves", "High Volatility"]
-)
-
-interval_minutes = st.sidebar.selectbox("⏱️ Aggregation Interval (minutes):", [1, 3, 5, 15, 30], index=2)
-
-min_periods = st.sidebar.slider("📈 Minimum Data Points:", 3, 50, 10, help="Minimum number of data points required")
-
-# Advanced filters
-st.sidebar.markdown("#### 🔧 Advanced Filters")
-min_cum_delta = st.sidebar.number_input("Min |Cumulative Delta|:", value=0, step=10)
-min_strength = st.sidebar.slider("Min Strength Score:", 0, 100, 0, help="Minimum trend strength percentage")
-max_volatility = st.sidebar.slider("Max Volatility Score:", 0, 100, 100, help="Maximum volatility allowed")
-min_price = st.sidebar.number_input("Min Price:", value=0.0, step=1.0)
-max_price = st.sidebar.number_input("Max Price (0=no limit):", value=0.0, step=1.0)
-
-# Display options
-show_mini_charts = st.sidebar.toggle("📊 Show Mini Charts", value=False)
-auto_sort = st.sidebar.selectbox("🔀 Sort By:", 
-    ["Cumulative Delta", "Strength Score", "Volatility Score", "Zero Crosses", "Price", "Symbol"], 
-    index=0)
-
-st.sidebar.markdown("---")
-
-# Main content
-st.title("🎯 Enhanced Stock Delta Screener")
-st.caption(f"Real-time screening from market open ({market_start.strftime('%H:%M')}) • {interval_minutes}min intervals")
+with col3:
+    if is_market_open:
+        time_to_close = market_end - now_ist
+        hours, remainder = divmod(time_to_close.seconds, 3600)
+        minutes, _ = divmod(remainder, 60)
+        st.caption(f"⏰ {hours}h {minutes}m left")
+    else:
+        st.caption(f"🔄 Auto-refresh: 10min")
 
 # Create placeholders for dynamic content
 status_placeholder = st.empty()
@@ -502,9 +489,9 @@ if stock_df.empty:
 
 # Processing indicator
 with status_placeholder.container():
-    st.info(f"🔄 Scanning {len(stock_df)} stocks from market open...")
+    st.info(f"🔄 Scanning {len(stock_df)} stocks...")
 
-# Process all stocks
+# Process all stocks with default settings
 all_security_ids = stock_df['security_id'].unique()
 batch_size = 50  # Process in batches
 
@@ -513,7 +500,7 @@ progress_bar = st.progress(0)
 
 for i in range(0, len(all_security_ids), batch_size):
     batch = all_security_ids[i:i+batch_size]
-    batch_results = process_stock_batch(batch, interval_minutes)
+    batch_results = process_stock_batch(batch, INTERVAL_MINUTES)
     all_results.extend(batch_results)
     
     # Update progress
@@ -523,432 +510,238 @@ for i in range(0, len(all_security_ids), batch_size):
 
 progress_bar.empty()
 
-# Filter results based on selected criteria
+# Filter results based on default criteria
 filtered_results = []
 for result in all_results:
     # Apply minimum periods filter
-    if result['total_periods'] < min_periods:
+    if result['total_periods'] < MIN_PERIODS:
         continue
     
     # Apply cumulative delta filter
-    if abs(result['current_cum_delta']) < min_cum_delta:
+    if abs(result['current_cum_delta']) < MIN_CUM_DELTA:
         continue
     
     # Apply strength filter
-    if result['strength_score'] < min_strength:
+    if result['strength_score'] < MIN_STRENGTH:
         continue
     
     # Apply volatility filter
-    if result['volatility_score'] > max_volatility:
+    if result['volatility_score'] > MAX_VOLATILITY:
         continue
     
     # Apply price filters
-    if min_price > 0 and result['price'] < min_price:
+    if MIN_PRICE > 0 and result['price'] < MIN_PRICE:
         continue
-    if max_price > 0 and result['price'] > max_price:
-        continue
-    
-    # Apply mode filter
-    if filter_mode == "Strongly Bullish" and "Strongly Bullish" not in result['trend']:
-        continue
-    elif filter_mode == "Moderately Bullish" and "Moderately Bullish" not in result['trend']:
-        continue
-    elif filter_mode == "Currently Bullish" and result['current_cum_delta'] <= 0:
-        continue
-    elif filter_mode == "Strongly Bearish" and "Strongly Bearish" not in result['trend']:
-        continue
-    elif filter_mode == "Moderately Bearish" and "Moderately Bearish" not in result['trend']:
-        continue
-    elif filter_mode == "Currently Bearish" and result['current_cum_delta'] >= 0:
-        continue
-    elif filter_mode == "Zero Crosses" and "Zero Cross" not in result['status']:
-        continue
-    elif filter_mode == "Recent Moves" and "Recent Move" not in result['status']:
-        continue
-    elif filter_mode == "High Volatility" and result['volatility_score'] < 20:
+    if MAX_PRICE > 0 and result['price'] > MAX_PRICE:
         continue
     
     filtered_results.append(result)
 
-# Sort results
-if auto_sort == "Cumulative Delta":
-    filtered_results.sort(key=lambda x: abs(x['current_cum_delta']), reverse=True)
-elif auto_sort == "Strength Score":
-    filtered_results.sort(key=lambda x: x['strength_score'], reverse=True)
-elif auto_sort == "Volatility Score":
-    filtered_results.sort(key=lambda x: x['volatility_score'], reverse=True)
-elif auto_sort == "Zero Crosses":
-    filtered_results.sort(key=lambda x: x['zero_crosses'], reverse=True)
-elif auto_sort == "Price":
-    filtered_results.sort(key=lambda x: x['price'], reverse=True)
-else:  # Symbol
-    filtered_results.sort(key=lambda x: x['symbol'])
+# Sort results by cumulative delta (default)
+filtered_results.sort(key=lambda x: abs(x['current_cum_delta']), reverse=True)
 
 # Update status
-status_placeholder.success(f"✅ Found {len(filtered_results)} stocks matching criteria (from {len(all_results)} analyzed)")
+status_placeholder.success(f"✅ Found {len(filtered_results)} active stocks (from {len(all_results)} analyzed)")
 
-# Display enhanced metrics
+# Display mobile-friendly metrics
 if all_results:
     with metrics_placeholder.container():
-        col1, col2, col3, col4, col5 = st.columns(5)
+        # Compact metrics for mobile
+        col1, col2, col3, col4 = st.columns(4)
         
         bullish_count = len([r for r in filtered_results if r['current_cum_delta'] > 0])
         bearish_count = len([r for r in filtered_results if r['current_cum_delta'] < 0])
         zero_cross_count = len([r for r in filtered_results if 'Zero Cross' in r['status']])
-        high_strength_count = len([r for r in filtered_results if r['strength_score'] > 70])
         avg_cum_delta = sum([r['current_cum_delta'] for r in filtered_results]) / len(filtered_results) if filtered_results else 0
         
         with col1:
-            st.metric("🟢 Bullish", bullish_count)
+            st.metric("🟢 Bull", bullish_count)
         with col2:
-            st.metric("🔴 Bearish", bearish_count)
+            st.metric("🔴 Bear", bearish_count)
         with col3:
-            st.metric("🔄 Zero Crosses", zero_cross_count)
+            st.metric("🔄 Cross", zero_cross_count)
         with col4:
-            st.metric("💪 High Strength", high_strength_count)
-        with col5:
-            st.metric("📊 Avg Cum Δ", f"{avg_cum_delta:.0f}")
+            st.metric("📊 Avg Δ", f"{avg_cum_delta:.0f}")
 
-# Display results
+# Display mobile-friendly results
 if filtered_results:
     with results_placeholder.container():
         st.markdown("---")
         
-        # Create enhanced results table
-        table_data = []
-        for result in filtered_results:
-            # Status with emoji
-            status_emojis = {
-                'Strongly Bullish': '🟢',
-                'Moderately Bullish': '🟡',
-                'Currently Bullish': '🔵',
-                'Strongly Bearish': '🔴',
-                'Moderately Bearish': '🟠',
-                'Currently Bearish': '🟤',
-                'Zero Cross': '🔄',
-                'Recent Move': '⚡',
-                'Neutral': '⚪'
-            }
-            
-            # Get main status
-            main_status = result['status'].split(':')[0] if ':' in result['status'] else result['status']
-            for key in status_emojis.keys():
-                if key in result['status']:
-                    emoji = status_emojis[key]
-                    break
-            else:
-                emoji = '❓'
-            
-            table_data.append({
-                'Symbol': result['symbol'],
-                'Status': f"{emoji} {result['status']}",
-                'Cum Δ': result['current_cum_delta'],
-                'Strength': f"{result['strength_score']:.0f}%",
-                'Volatility': f"{result['volatility_score']:.1f}",
-                'Current Tick Δ': result['tick_delta'],
-                'Price': f"₹{result['price']:.1f}",
-                'Zero Crosses': result['zero_crosses'],
-                'Max+/Max-': f"{result['max_positive']}/{result['max_negative']}",
-                'Session': f"{result['session_progress']:.0f}%",
-                'Data Points': result['total_periods'],
-                'Latest Time': result['latest_time'].strftime('%H:%M') if result['latest_time'] else 'N/A'
-            })
+        # Quick filters for mobile
+        filter_tabs = st.tabs(["🔥 All", "🟢 Bullish", "🔴 Bearish", "🔄 Crosses", "⚡ Recent"])
         
-        results_df = pd.DataFrame(table_data)
+        with filter_tabs[0]:  # All stocks
+            display_results = filtered_results
+        with filter_tabs[1]:  # Bullish
+            display_results = [r for r in filtered_results if r['current_cum_delta'] > 0]
+        with filter_tabs[2]:  # Bearish
+            display_results = [r for r in filtered_results if r['current_cum_delta'] < 0]
+        with filter_tabs[3]:  # Zero crosses
+            display_results = [r for r in filtered_results if 'Zero Cross' in r['status']]
+        with filter_tabs[4]:  # Recent moves
+            display_results = [r for r in filtered_results if 'Recent Move' in r['status']]
         
-        # Enhanced styling
-        def style_cum_delta(val):
-            if isinstance(val, (int, float)):
-                if val > 0:
-                    return 'background-color: rgba(76, 175, 80, 0.3); color: green; font-weight: bold'
-                elif val < 0:
-                    return 'background-color: rgba(244, 67, 54, 0.3); color: red; font-weight: bold'
-            return ''
-        
-        def style_strength(val):
-            if isinstance(val, str) and '%' in val:
-                num_val = float(val.replace('%', ''))
-                if num_val >= 80:
-                    return 'background-color: rgba(76, 175, 80, 0.2); color: green; font-weight: bold'
-                elif num_val >= 60:
-                    return 'background-color: rgba(255, 193, 7, 0.2); color: orange; font-weight: bold'
-            return ''
-        
-        def style_volatility(val):
-            if isinstance(val, (int, float, str)):
-                try:
-                    num_val = float(str(val))
-                    if num_val > 30:
-                        return 'background-color: rgba(244, 67, 54, 0.2); color: red'
-                    elif num_val > 15:
-                        return 'background-color: rgba(255, 193, 7, 0.2); color: orange'
-                except:
-                    pass
-            return ''
-        
-        styled_df = results_df.style.applymap(style_cum_delta, subset=['Cum Δ']) \
-                                   .applymap(style_strength, subset=['Strength']) \
-                                   .applymap(style_volatility, subset=['Volatility'])
-        
-        st.dataframe(styled_df, use_container_width=True, height=600)
-        
-        # Enhanced mini charts
-        if show_mini_charts and len(filtered_results) <= 20:
-            st.markdown("---")
-            st.subheader("📊 Mini Charts (Top 20)")
-            
-            cols_per_row = 4
-            for i in range(0, min(20, len(filtered_results)), cols_per_row):
-                cols = st.columns(cols_per_row)
+        if display_results:
+            # Mobile-optimized table with essential columns only
+            mobile_data = []
+            for result in display_results:  # Show all results
+                # Compact status with emoji
+                if result['current_cum_delta'] > 0:
+                    if 'Strongly' in result['trend']:
+                        status_emoji = "🟢"
+                    elif 'Moderately' in result['trend']:
+                        status_emoji = "🟡"
+                    else:
+                        status_emoji = "🔵"
+                elif result['current_cum_delta'] < 0:
+                    if 'Strongly' in result['trend']:
+                        status_emoji = "🔴"
+                    elif 'Moderately' in result['trend']:
+                        status_emoji = "🟠"
+                    else:
+                        status_emoji = "🟤"
+                else:
+                    status_emoji = "⚪"
                 
-                for j, col in enumerate(cols):
-                    if i + j < len(filtered_results):
-                        result = filtered_results[i + j]
-                        
-                        with col:
-                            # Fetch detailed data for mini chart
-                            df = fetch_stock_data_quick(result['security_id'])
-                            if not df.empty:
-                                agg_df = aggregate_stock_data(df, interval_minutes)
-                                
-                                if not agg_df.empty:
-                                    fig = go.Figure()
-                                    
-                                    # Main line
-                                    color = 'green' if result['current_cum_delta'] > 0 else 'red'
-                                    fig.add_trace(go.Scatter(
-                                        x=agg_df['timestamp'],
-                                        y=agg_df['cumulative_tick_delta'],
-                                        mode='lines+markers',
-                                        line=dict(color=color, width=2),
-                                        marker=dict(size=3),
-                                        showlegend=False
-                                    ))
-                                    
-                                    # Zero line
-                                    fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
-                                    
-                                    # Highlight current value
-                                    if not agg_df.empty:
-                                        latest_val = agg_df.iloc[-1]['cumulative_tick_delta']
-                                        fig.add_trace(go.Scatter(
-                                            x=[agg_df.iloc[-1]['timestamp']],
-                                            y=[latest_val],
-                                            mode='markers',
-                                            marker=dict(size=8, color=color, symbol='diamond'),
-                                            showlegend=False
-                                        ))
-                                    
-                                    fig.update_layout(
-                                        height=200,
-                                        margin=dict(l=20, r=20, t=40, b=20),
-                                        title=f"{result['symbol']}<br>Δ{result['current_cum_delta']:+d} | {result['strength_score']:.0f}%",
-                                        title_font_size=10,
-                                        showlegend=False,
-                                        xaxis=dict(showticklabels=False),
-                                        yaxis=dict(title="Cum Δ", title_font_size=8)
-                                    )
-                                    
-                                    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-        
-        # Enhanced export functionality
-        st.markdown("---")
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            csv_data = results_df.to_csv(index=False).encode('utf-8')
+                # Add special indicators
+                if 'Zero Cross' in result['status']:
+                    status_emoji = "🔄"
+                elif 'Recent Move' in result['status']:
+                    status_emoji = "⚡"
+                
+                mobile_data.append({
+                    'Stock': result['symbol'],
+                    'Status': status_emoji,
+                    'Cum Δ': result['current_cum_delta'],
+                    'Strength': f"{result['strength_score']:.0f}%",
+                    'Price': f"₹{result['price']:.1f}",
+                    'Time': result['latest_time'].strftime('%H:%M') if result['latest_time'] else 'N/A'
+                })
+            
+            mobile_df = pd.DataFrame(mobile_data)
+            
+            # Mobile-friendly styling
+            def style_mobile_delta(val):
+                if isinstance(val, (int, float)):
+                    if val > 0:
+                        return 'background-color: rgba(76, 175, 80, 0.3); color: green; font-weight: bold; font-size: 14px;'
+                    elif val < 0:
+                        return 'background-color: rgba(244, 67, 54, 0.3); color: red; font-weight: bold; font-size: 14px;'
+                return 'font-size: 14px;'
+            
+            def style_mobile_strength(val):
+                if isinstance(val, str) and '%' in val:
+                    num_val = float(val.replace('%', ''))
+                    if num_val >= 80:
+                        return 'background-color: rgba(76, 175, 80, 0.2); color: green; font-weight: bold; font-size: 12px;'
+                    elif num_val >= 60:
+                        return 'background-color: rgba(255, 193, 7, 0.2); color: orange; font-weight: bold; font-size: 12px;'
+                return 'font-size: 12px;'
+
+            def style_mobile_general(val):
+                return 'font-size: 14px; padding: 4px;'
+            
+            styled_mobile_df = mobile_df.style.applymap(style_mobile_delta, subset=['Cum Δ']) \
+                                             .applymap(style_mobile_strength, subset=['Strength']) \
+                                             .applymap(style_mobile_general, subset=['Stock', 'Status', 'Price', 'Time'])
+            
+            # Display with mobile-friendly height
+            st.dataframe(styled_mobile_df, use_container_width=True, height=400)
+            
+            # Mobile-friendly summary cards for top performers
+            if len(display_results) > 0:
+                st.markdown("### 🏆 Top Performers")
+                
+                # Top 3 bullish and bearish
+                top_bullish = [r for r in display_results if r['current_cum_delta'] > 0][:3]
+                top_bearish = [r for r in display_results if r['current_cum_delta'] < 0][:3]
+                
+                if top_bullish:
+                    st.markdown("**🟢 Top Bullish:**")
+                    for i, stock in enumerate(top_bullish, 1):
+                        st.write(f"{i}. **{stock['symbol']}** - Delta: {stock['current_cum_delta']:+d} | Strength: {stock['strength_score']:.0f}% | ₹{stock['price']:.1f}")
+                
+                if top_bearish:
+                    st.markdown("**🔴 Top Bearish:**")
+                    for i, stock in enumerate(top_bearish, 1):
+                        st.write(f"{i}. **{stock['symbol']}** - Delta: {stock['current_cum_delta']:+d} | Strength: {stock['strength_score']:.0f}% | ₹{stock['price']:.1f}")
+            
+            # Mobile download option
+            st.markdown("---")
+            csv_data = mobile_df.to_csv(index=False).encode('utf-8')
             st.download_button(
-                "📥 Download Results CSV",
+                "📥 Download Results",
                 csv_data,
                 f"delta_screener_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                 "text/csv",
                 use_container_width=True
             )
-        
-        with col2:
-            # Create detailed summary report
-            summary_report = f"""
-# Enhanced Delta Screener Summary Report
-Generated: {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S IST')}
-Market Session: {market_start.strftime('%H:%M')} - {market_end.strftime('%H:%M')} IST
-Market Status: {'🟢 Open' if is_market_open else '🔴 Closed'}
-
-## Filter Settings
-- Mode: {filter_mode}
-- Interval: {interval_minutes} minutes
-- Min Periods: {min_periods}
-- Min |Cum Delta|: {min_cum_delta}
-- Min Strength Score: {min_strength}%
-- Max Volatility Score: {max_volatility}
-
-## Results Summary
-- Total Stocks Scanned: {len(all_results)}
-- Matching Criteria: {len(filtered_results)}
-- Bullish Stocks: {bullish_count}
-- Bearish Stocks: {bearish_count}
-- Zero Crosses: {zero_cross_count}
-- High Strength (>70%): {high_strength_count}
-- Average Cumulative Delta: {avg_cum_delta:.0f}
-
-## Top 10 by |Cumulative Delta|
-"""
-            top_10 = sorted(filtered_results, key=lambda x: abs(x['current_cum_delta']), reverse=True)[:10]
-            for i, stock in enumerate(top_10, 1):
-                summary_report += f"{i}. {stock['symbol']}: {stock['current_cum_delta']:+d} ({stock['trend']}) - Strength: {stock['strength_score']:.0f}%\n"
-            
-            summary_report += f"""
-## Top 10 by Strength Score
-"""
-            top_strength = sorted(filtered_results, key=lambda x: x['strength_score'], reverse=True)[:10]
-            for i, stock in enumerate(top_strength, 1):
-                summary_report += f"{i}. {stock['symbol']}: {stock['strength_score']:.0f}% - Delta: {stock['current_cum_delta']:+d}\n"
-            
-            st.download_button(
-                "📄 Download Summary Report",
-                summary_report.encode('utf-8'),
-                f"delta_summary_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
-                "text/markdown",
-                use_container_width=True
-            )
-        
-        with col3:
-            # Create alerts for significant moves
-            alerts = []
-            for result in filtered_results:
-                if abs(result['current_cum_delta']) > 100 and result['strength_score'] > 80:
-                    direction = "BULLISH" if result['current_cum_delta'] > 0 else "BEARISH"
-                    alerts.append(f"🚨 {result['symbol']}: Strong {direction} signal - Delta: {result['current_cum_delta']:+d}, Strength: {result['strength_score']:.0f}%")
-                elif "Zero Cross" in result['status'] and abs(result['current_cum_delta']) > 50:
-                    alerts.append(f"🔄 {result['symbol']}: Zero Cross Alert - Delta: {result['current_cum_delta']:+d}")
-                elif "Recent Move" in result['status'] and result['strength_score'] > 70:
-                    alerts.append(f"⚡ {result['symbol']}: Recent Strong Move - Delta: {result['current_cum_delta']:+d}")
-            
-            if alerts:
-                alert_text = f"""
-# Delta Screener Alerts
-Generated: {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S IST')}
-
-## Active Alerts ({len(alerts)})
-"""
-                for alert in alerts[:20]:  # Limit to top 20 alerts
-                    alert_text += f"\n{alert}"
-                
-                st.download_button(
-                    "🚨 Download Alerts",
-                    alert_text.encode('utf-8'),
-                    f"delta_alerts_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
-                    "text/plain",
-                    use_container_width=True
-                )
-            else:
-                st.button("🚨 No Alerts", disabled=True, use_container_width=True)
 
 else:
     with results_placeholder.container():
-        st.warning(f"🔍 No stocks found matching the criteria '{filter_mode}'")
-        st.info("💡 Try adjusting the filters or reducing the minimum requirements")
-        
-        # Show some sample data from all results
-        if all_results:
-            st.markdown("### Sample of Available Data")
-            sample_data = []
-            for result in all_results[:5]:
-                sample_data.append({
-                    'Symbol': result['symbol'],
-                    'Cumulative Delta': result['current_cum_delta'],
-                    'Trend': result['trend'],
-                    'Strength': f"{result['strength_score']:.0f}%",
-                    'Data Points': result['total_periods']
-                })
-            st.dataframe(pd.DataFrame(sample_data), use_container_width=True)
+        st.warning("🔍 No active stocks found")
+        st.info("💡 Stocks need at least 10 data points to appear in results")
 
-# Market insights section
+# Mobile-friendly market insights
 if all_results:
     st.markdown("---")
-    st.subheader("📈 Market Insights")
+    st.subheader("📈 Market Summary")
+    
+    # Compact insights for mobile
+    total_bullish = len([r for r in all_results if r['current_cum_delta'] > 0])
+    total_bearish = len([r for r in all_results if r['current_cum_delta'] < 0])
+    
+    sentiment_score = (total_bullish - total_bearish) / len(all_results) * 100
     
     col1, col2 = st.columns(2)
     
     with col1:
-        # Overall market sentiment
-        total_bullish = len([r for r in all_results if r['current_cum_delta'] > 0])
-        total_bearish = len([r for r in all_results if r['current_cum_delta'] < 0])
-        
-        sentiment_score = (total_bullish - total_bearish) / len(all_results) * 100
-        
         if sentiment_score > 20:
-            sentiment = "🟢 Strongly Bullish"
+            sentiment = "🟢 Strong Bull"
         elif sentiment_score > 5:
-            sentiment = "🟡 Moderately Bullish"
+            sentiment = "🟡 Mild Bull"
         elif sentiment_score > -5:
             sentiment = "⚪ Neutral"
         elif sentiment_score > -20:
-            sentiment = "🟠 Moderately Bearish"
+            sentiment = "🟠 Mild Bear"
         else:
-            sentiment = "🔴 Strongly Bearish"
+            sentiment = "🔴 Strong Bear"
         
-        st.metric("Overall Market Sentiment", sentiment, f"{sentiment_score:+.1f}%")
-        
-        # Active vs inactive stocks
-        active_stocks = len([r for r in all_results if r['total_periods'] >= min_periods])
-        st.metric("Active Stocks", f"{active_stocks}/{len(all_results)}", f"{active_stocks/len(all_results)*100:.0f}%")
+        st.metric("Market Mood", sentiment, f"{sentiment_score:+.0f}%")
     
     with col2:
-        # Volatility insights
-        avg_volatility = sum([r['volatility_score'] for r in all_results]) / len(all_results)
-        high_vol_count = len([r for r in all_results if r['volatility_score'] > 25])
-        
-        st.metric("Average Volatility", f"{avg_volatility:.1f}", f"{high_vol_count} high-vol stocks")
-        
-        # Session progress
-        session_complete = (now_ist - market_start).total_seconds() / (market_end - market_start).total_seconds() * 100
-        session_complete = max(0, min(100, session_complete))
-        
-        st.metric("Session Progress", f"{session_complete:.0f}%", 
-                 f"{'Market Open' if is_market_open else 'Market Closed'}")
+        active_stocks = len([r for r in all_results if r['total_periods'] >= MIN_PERIODS])
+        st.metric("Active Stocks", f"{active_stocks}/{len(all_results)}", f"{active_stocks/len(all_results)*100:.0f}%")
 
-# Footer with enhanced information
+# Mobile-friendly footer
 st.markdown("---")
-col1, col2, col3 = st.columns(3)
+col1, col2 = st.columns(2)
 
 with col1:
-    st.caption(f"🕒 Last updated: {datetime.now(IST).strftime('%H:%M:%S IST')}")
+    st.caption(f"🕒 Updated: {datetime.now(IST).strftime('%H:%M IST')}")
 
 with col2:
-    st.caption(f"🔄 Auto-refresh: {'ON' if refresh_enabled else 'OFF'} ({refresh_interval}s)")
+    st.caption(f"📊 {len(all_results) if all_results else 0} stocks • 5min intervals")
 
-with col3:
-    st.caption(f"📊 Interval: {interval_minutes}min | Stocks: {len(all_results) if all_results else 0}")
-
-# Add legend for status meanings
-with st.expander("📖 Status Legend"):
+# Mobile legend (collapsible)
+with st.expander("📖 Quick Guide"):
     st.markdown("""
-    **Trend Classifications:**
-    - 🟢 **Strongly Bullish**: >75% of periods positive, consistent upward movement
-    - 🟡 **Moderately Bullish**: 60-75% of periods positive, generally upward
-    - 🔵 **Currently Bullish**: Positive delta but mixed history
-    - 🔴 **Strongly Bearish**: >75% of periods negative, consistent downward movement
-    - 🟠 **Moderately Bearish**: 60-75% of periods negative, generally downward
-    - 🟤 **Currently Bearish**: Negative delta but mixed history
-    
-    **Special Indicators:**
-    - 🔄 **Zero Cross**: Recently crossed zero line (trend reversal)
-    - ⚡ **Recent Move**: Significant change in last few periods
-    - ⚪ **Neutral**: Around zero with no clear direction
+    **Status Indicators:**
+    - 🟢 **Strong Bullish** (>75% positive periods)
+    - 🟡 **Moderate Bullish** (60-75% positive)
+    - 🔵 **Currently Bullish** (positive now)
+    - 🔴 **Strong Bearish** (>75% negative periods)
+    - 🟠 **Moderate Bearish** (60-75% negative)
+    - 🟤 **Currently Bearish** (negative now)
+    - 🔄 **Zero Cross** (trend reversal)
+    - ⚡ **Recent Move** (significant change)
     
     **Metrics:**
-    - **Strength Score**: Consistency of trend direction (0-100%)
-    - **Volatility Score**: Frequency of zero crosses (higher = more volatile)
-    - **Session Progress**: Percentage of trading day completed
+    - **Cum Δ**: Cumulative tick delta (buy - sell pressure)
+    - **Strength**: Trend consistency percentage
+    - **Price**: Current or latest available price
     """)
 
-# Performance monitoring
-if st.sidebar.button("🔧 Clear Cache"):
-    st.cache_data.clear()
-    # Clear local cache files
-    import shutil
-    if os.path.exists(LOCAL_CACHE_DIR):
-        shutil.rmtree(LOCAL_CACHE_DIR)
-        os.makedirs(LOCAL_CACHE_DIR)
-    st.sidebar.success("Cache cleared!")
-    st.experimental_rerun()
+# Performance note for mobile
+st.info("💡 **Mobile Tip**: Swipe left/right on tables to see more columns. Tap tabs above to filter results quickly.")
