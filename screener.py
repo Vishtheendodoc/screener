@@ -73,9 +73,9 @@ def get_market_hours_today():
     now_ist = datetime.now(IST)
     today_date = now_ist.date()
     
-    # Indian market hours: 9:00 AM to 11:59 PM IST
-    market_start = IST.localize(datetime.combine(today_date, time(9, 00)))
-    market_end = IST.localize(datetime.combine(today_date, time(23, 59, 59)))
+    # Indian market hours: 9:15 AM to 3:30 PM IST
+    market_start = IST.localize(datetime.combine(today_date, time(9, 15)))
+    market_end = IST.localize(datetime.combine(today_date, time(15, 30)))
     
     # For screening purposes, extend end time to capture after-market data
     extended_end = IST.localize(datetime.combine(today_date, time(23, 59, 59)))
@@ -290,21 +290,10 @@ def aggregate_stock_data(df, interval_minutes=5):
     
     return df_agg
 
-def fetch_cumulative_tick_delta(security_id, timeout=5):
-    """Fetch cumulative_tick_delta from backend API"""
-    try:
-        url = f"{FLASK_API_BASE}/cumulative_delta/{security_id}"
-        r = requests.get(url, timeout=timeout)
-        r.raise_for_status()
-        data = r.json()
-        return int(data.get("cumulative_tick_delta", 0))
-    except Exception as e:
-        logging.warning(f"Failed to fetch cumulative_tick_delta for {security_id}: {e}")
-        return 0
-
 def analyze_stock_pattern(df, security_id):
-    """Enhanced analysis using cumulative_tick_delta from backend API"""
+    """Enhanced analysis with improved live price fetching"""
     if df.empty or len(df) < 2:
+        # Try to get live price even if no data using the working API
         live_price = fetch_current_price(security_id)
         return {
             'status': 'No Data',
@@ -322,48 +311,52 @@ def analyze_stock_pattern(df, security_id):
             'strength_score': 0,
             'session_progress': 0
         }
-
+    
     latest = df.iloc[-1]
-
-    # ✅ Use backend API for cumulative_tick_delta
-    current_cum_delta = fetch_cumulative_tick_delta(security_id)
-
+    current_cum_delta = int(latest['cumulative_tick_delta'])
+    
     # Get live price using the working method
     current_price = get_live_or_latest_price(df, security_id)
-
-    # Calculate additional metrics from DataFrame
+    
+    # Calculate additional metrics
     max_positive = int(df['cumulative_tick_delta'].max())
     max_negative = int(df['cumulative_tick_delta'].min())
-
+    
+    # Count zero crosses (only count non-API-failure periods)
     zero_crosses = 0
     prev_sign = None
     for i, delta in enumerate(df['cumulative_tick_delta']):
+        # Skip periods that might be API failures
         current_tick = df.iloc[i]['tick_delta'] if 'tick_delta' in df.columns else 0
         buy_init = df.iloc[i]['buy_initiated'] if 'buy_initiated' in df.columns else 0
         sell_init = df.iloc[i]['sell_initiated'] if 'sell_initiated' in df.columns else 0
-
+        
+        # Skip if this looks like an API failure period
         if current_tick == 0 and buy_init == 0 and sell_init == 0:
             continue
-
+            
         current_sign = 'pos' if delta > 0 else 'neg' if delta < 0 else 'zero'
         if prev_sign and prev_sign != current_sign and current_sign != 'zero':
             zero_crosses += 1
         prev_sign = current_sign
-
+    
+    # Calculate consistency and strength
     total_periods = len(df)
     positive_periods = len(df[df['cumulative_tick_delta'] > 0])
     negative_periods = len(df[df['cumulative_tick_delta'] < 0])
-
+    
+    # Volatility score (how much it oscillates)
     volatility_score = zero_crosses / max(1, total_periods) * 100
-
+    
+    # Strength score (how strong the current trend is)
     if current_cum_delta > 0:
         strength_score = (positive_periods / total_periods) * 100
     else:
         strength_score = (negative_periods / total_periods) * 100
-
-    # Trend logic
-    consistency_threshold = 0.75
-
+    
+    # Determine trend with enhanced logic
+    consistency_threshold = 0.75  # 75% of periods in same direction
+    
     if current_cum_delta > 0:
         if positive_periods / total_periods >= consistency_threshold:
             trend = 'Strongly Bullish'
@@ -380,21 +373,24 @@ def analyze_stock_pattern(df, security_id):
             trend = 'Currently Bearish'
     else:
         trend = 'Neutral'
-
+    
+    # Enhanced status determination
     status = trend
-
+    
+    # Check for recent significant moves (exclude API failure periods)
     if len(df) >= 5:
         recent_change = df.iloc[-1]['cumulative_tick_delta'] - df.iloc[-5]['cumulative_tick_delta']
-        if abs(recent_change) > abs(current_cum_delta) * 0.3:
+        if abs(recent_change) > abs(current_cum_delta) * 0.3:  # 30% change recently
             status = f"Recent Move: {trend}"
-
+    
+    # Check for zero crosses
     if zero_crosses > 0:
         recent_df = df.tail(5)
         if len(recent_df) >= 3:
             signs = [1 if x > 0 else -1 if x < 0 else 0 for x in recent_df['cumulative_tick_delta']]
-            if len(set([s for s in signs if s != 0])) > 1:
+            if len(set([s for s in signs if s != 0])) > 1:  # Multiple non-zero signs
                 status = f"Zero Cross: {trend}"
-
+    
     return {
         'status': status,
         'current_cum_delta': current_cum_delta,
@@ -414,7 +410,6 @@ def analyze_stock_pattern(df, security_id):
         'strength_score': round(strength_score, 1),
         'session_progress': round(latest.get('session_progress', 0), 1)
     }
-
 
 def process_stock_batch(security_ids, interval_minutes=5, max_workers=15):
     """Process a batch of stocks concurrently with improved error handling"""
